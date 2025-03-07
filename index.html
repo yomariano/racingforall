@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Racing Competition</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="score-display">Position: 1/4</div>
+        <div id="controls-info">
+            <p>← → : Change Lane | ↑ : Accelerate | ↓ : Brake</p>
+        </div>
+        <div id="game-over">
+            <h1>RACE FINISHED</h1>
+            <div id="final-score">You win!</div>
+            <button id="restart-button">Race Again</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>

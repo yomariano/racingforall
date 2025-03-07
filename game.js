@@ -11,6 +11,8 @@
     let finishLine;
     let playerPosition = 1; // Current race position
     let roadTexture;
+    let collisionEffects = []; // Array to store collision effect objects
+    let collisionSound; // Sound effect for collisions
     
     // Game settings
     const ROAD_LENGTH = 300;
@@ -20,11 +22,15 @@
     const ROAD_SEGMENTS = 20;
     const SEGMENT_LENGTH = ROAD_LENGTH / ROAD_SEGMENTS;
     const PLAYER_SPEED = 0.15; // Lane change speed
-    const COMPETITOR_COUNT = 3; // Fixed number of competitors
+    const COMPETITOR_COUNT = 5; // Fixed number of competitors
     const RACE_DISTANCE = 500; // Distance to finish line
     const CAR_SPEED_MIN = 0.8; // Minimum car speed
     const CAR_SPEED_MAX = 1.2; // Maximum car speed
     const ACCELERATION = 0.005; // How quickly cars accelerate
+    const GRID_ROWS = 3; // Number of rows in the starting grid
+    const GRID_SPACING_Z = 8; // Spacing between rows (increased from 5)
+    const CAR_LENGTH = 4; // Length of car for collision detection
+    const COLLISION_EFFECT_DURATION = 500; // Duration of collision effect in ms
     
     // Camera settings
     const CAMERA_HEIGHT = 5;
@@ -77,6 +83,9 @@
         directionalLight.shadow.camera.bottom = -100;
         scene.add(directionalLight);
         
+        // Initialize sound effects
+        initSounds();
+        
         // Create environment
         createSky();
         createGround();
@@ -101,6 +110,52 @@
         
         // Start countdown
         startRace();
+    }
+    
+    function initSounds() {
+        // Create an audio listener
+        const listener = new THREE.AudioListener();
+        camera.add(listener);
+        
+        // Create collision sound
+        collisionSound = new THREE.Audio(listener);
+        
+        // Create a fallback sound using AudioContext
+        createFallbackCollisionSound();
+    }
+    
+    function createFallbackCollisionSound() {
+        // Create a simple beep sound as fallback
+        const listener = new THREE.AudioListener();
+        camera.add(listener);
+        
+        collisionSound = new THREE.Audio(listener);
+        
+        // Create an oscillator
+        const context = listener.context;
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        
+        oscillator.frequency.value = 220;
+        oscillator.type = 'square';
+        gain.gain.value = 0.1;
+        
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        
+        // Create a buffer from this
+        const length = context.sampleRate * 0.3; // 300ms
+        const buffer = context.createBuffer(1, length, context.sampleRate);
+        const data = buffer.getChannelData(0);
+        
+        for (let i = 0; i < length; i++) {
+            // Fade out
+            const t = i / length;
+            data[i] = (1 - t) * Math.sin(i * 0.1) * 0.5;
+        }
+        
+        collisionSound.setBuffer(buffer);
+        collisionSound.setVolume(0.5);
     }
     
     function positionCamera() {
@@ -351,8 +406,10 @@
         rightTaillight.position.set(0.7, 0.7, -2);
         carGroup.add(rightTaillight);
         
-        // Set initial position
-        carGroup.position.set(0, 0, 0);
+        // Set initial position - pole position at the front of the grid
+        const laneIndex = 1; // Middle lane (0, 1, 2)
+        const xPos = -ROAD_WIDTH/2 + (laneIndex + 0.5) * LANE_WIDTH;
+        carGroup.position.set(xPos, 0, -2); // Position slightly ahead of the first row
         
         // Add to scene
         scene.add(carGroup);
@@ -363,12 +420,14 @@
         updatePlayerCollisionBox();
         
         // Store lane information
-        player.currentLane = 1; // Middle lane (0, 1, 2)
+        player.currentLane = laneIndex;
         
         // Racing properties
         player.speed = 0; // Current forward speed
         player.maxSpeed = CAR_SPEED_MAX + 0.2; // Slightly faster than competitors
         player.distance = 0; // Distance traveled
+        player.gridRow = 0; // Front row
+        player.gridCol = 1; // Middle position
     }
     
     function updatePlayerCollisionBox() {
@@ -437,10 +496,59 @@
         player.rotation.z += (targetTilt - player.rotation.z) * 0.1;
     }
     
-    function createCompetitorCar(index) {
-        // Choose a lane for this competitor
-        const lane = index % LANE_COUNT;
-        const xPos = -ROAD_WIDTH/2 + (lane + 0.5) * LANE_WIDTH;
+    function createCompetitors() {
+        // Create fixed number of competitor cars in a grid formation
+        let index = 0;
+        
+        // Calculate how many cars per row
+        const carsPerRow = Math.min(LANE_COUNT, Math.ceil(COMPETITOR_COUNT / GRID_ROWS));
+        
+        // Create grid of competitors
+        for (let row = 0; row < GRID_ROWS; row++) {
+            // Determine lane distribution for this row
+            const availableLanes = [...Array(LANE_COUNT).keys()]; // [0, 1, 2] for 3 lanes
+            
+            // If player is in row 0, remove player's lane
+            if (row === 0) {
+                const playerLaneIndex = availableLanes.indexOf(player.currentLane);
+                if (playerLaneIndex !== -1) {
+                    availableLanes.splice(playerLaneIndex, 1);
+                }
+            }
+            
+            // Shuffle available lanes for random distribution
+            shuffleArray(availableLanes);
+            
+            // Place cars in this row
+            for (let i = 0; i < carsPerRow && index < COMPETITOR_COUNT; i++) {
+                // Use modulo to cycle through available lanes if needed
+                const laneIndex = availableLanes[i % availableLanes.length];
+                createCompetitorCar(index, row, laneIndex, carsPerRow);
+                index++;
+            }
+        }
+    }
+    
+    // Helper function to shuffle array
+    function shuffleArray(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    }
+    
+    function createCompetitorCar(index, row, col, carsPerRow) {
+        // Calculate position in grid
+        // Ensure cars are properly spaced in lanes
+        const laneIndex = col % LANE_COUNT;
+        // Calculate x position based on lane
+        const xPos = -ROAD_WIDTH/2 + (laneIndex + 0.5) * LANE_WIDTH;
+        
+        // Position car in its row with proper spacing
+        // Add slight offset to even rows for staggered formation
+        const rowOffset = row % 2 === 0 ? 0 : 2;
+        const zPos = -(GRID_SPACING_Z * row + rowOffset);
         
         // Create car group
         const carGroup = new THREE.Group();
@@ -525,8 +633,8 @@
         rightTaillight.position.set(0.7, 0.7, -2);
         carGroup.add(rightTaillight);
         
-        // Set initial position (same starting line as player)
-        carGroup.position.set(xPos, 0, 0);
+        // Set initial position in the grid
+        carGroup.position.set(xPos, 0, zPos);
         
         // Add to scene
         scene.add(carGroup);
@@ -544,8 +652,10 @@
         carGroup.speed = 0; // Current forward speed
         carGroup.maxSpeed = CAR_SPEED_MIN + (Math.random() * (CAR_SPEED_MAX - CAR_SPEED_MIN)); // Random max speed
         carGroup.distance = 0; // Distance traveled
-        carGroup.currentLane = lane;
+        carGroup.currentLane = laneIndex;
         carGroup.index = index; // Store index for identification
+        carGroup.gridRow = row; // Store grid position
+        carGroup.gridCol = col;
         
         // Add to competitors array
         competitors.push(carGroup);
@@ -615,9 +725,17 @@
             
             // Check collision with player
             if (competitor.collisionBox.intersectsBox(player.collisionBox)) {
-                // Slow down both cars
-                player.speed *= 0.5;
-                competitor.speed *= 0.5;
+                // Handle collision with player
+                handleCarCollision(player, competitor);
+            }
+            
+            // Check collision with other competitors
+            for (let j = i + 1; j < competitors.length; j++) {
+                const otherCompetitor = competitors[j];
+                if (competitor.collisionBox.intersectsBox(otherCompetitor.collisionBox)) {
+                    // Handle collision between competitors
+                    handleCarCollision(competitor, otherCompetitor);
+                }
             }
             
             // Check if competitor has reached finish line
@@ -631,6 +749,172 @@
         if (player.distance >= RACE_DISTANCE && !raceFinished) {
             raceFinished = true;
             gameOver("You win!");
+        }
+    }
+    
+    function createCollisionEffect(position) {
+        // Create a particle effect at the collision point
+        const particleGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+        const particleMaterial = new THREE.MeshBasicMaterial({ 
+            color: 0xFFFFFF,
+            transparent: true,
+            opacity: 0.8
+        });
+        
+        const particleCount = 10;
+        const particles = [];
+        
+        // Create particles
+        for (let i = 0; i < particleCount; i++) {
+            const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+            
+            // Set initial position at collision point
+            particle.position.set(
+                position.x,
+                position.y + 1, // Slightly above the ground
+                position.z
+            );
+            
+            // Set random velocity
+            particle.velocity = {
+                x: (Math.random() - 0.5) * 0.2,
+                y: Math.random() * 0.2 + 0.1,
+                z: (Math.random() - 0.5) * 0.2
+            };
+            
+            scene.add(particle);
+            particles.push(particle);
+        }
+        
+        // Add to collision effects array with creation time
+        collisionEffects.push({
+            particles: particles,
+            createdAt: Date.now()
+        });
+    }
+    
+    function updateCollisionEffects() {
+        const now = Date.now();
+        
+        // Update each collision effect
+        for (let i = collisionEffects.length - 1; i >= 0; i--) {
+            const effect = collisionEffects[i];
+            const age = now - effect.createdAt;
+            
+            // Remove old effects
+            if (age > COLLISION_EFFECT_DURATION) {
+                effect.particles.forEach(particle => scene.remove(particle));
+                collisionEffects.splice(i, 1);
+                continue;
+            }
+            
+            // Update particles
+            const lifePercent = age / COLLISION_EFFECT_DURATION;
+            
+            effect.particles.forEach(particle => {
+                // Move particle based on velocity
+                particle.position.x += particle.velocity.x;
+                particle.position.y += particle.velocity.y;
+                particle.position.z += particle.velocity.z;
+                
+                // Apply gravity
+                particle.velocity.y -= 0.01;
+                
+                // Fade out
+                particle.material.opacity = 0.8 * (1 - lifePercent);
+                
+                // Shrink
+                const scale = 1 - lifePercent;
+                particle.scale.set(scale, scale, scale);
+            });
+        }
+    }
+    
+    function handleCarCollision(car1, car2) {
+        // Calculate collision response
+        
+        // 1. Determine collision direction (mainly front-to-back or side-to-side)
+        const zOverlap = Math.min(
+            Math.abs(car1.collisionBox.max.z - car2.collisionBox.min.z),
+            Math.abs(car2.collisionBox.max.z - car1.collisionBox.min.z)
+        );
+        
+        const xOverlap = Math.min(
+            Math.abs(car1.collisionBox.max.x - car2.collisionBox.min.x),
+            Math.abs(car2.collisionBox.max.x - car1.collisionBox.min.x)
+        );
+        
+        // Calculate collision point (midpoint between the two cars)
+        const collisionPoint = {
+            x: (car1.position.x + car2.position.x) / 2,
+            y: (car1.position.y + car2.position.y) / 2,
+            z: (car1.position.z + car2.position.z) / 2
+        };
+        
+        // Create collision effect
+        createCollisionEffect(collisionPoint);
+        
+        // Play collision sound
+        if (collisionSound && collisionSound.isPlaying) {
+            collisionSound.stop();
+        }
+        if (collisionSound && collisionSound.buffer) {
+            collisionSound.play();
+        }
+        
+        // 2. Apply appropriate collision response
+        if (zOverlap < xOverlap) {
+            // Front-to-back collision (one car rear-ending another)
+            // Determine which car is in front
+            const car1IsFront = car1.position.z < car2.position.z;
+            const frontCar = car1IsFront ? car1 : car2;
+            const backCar = car1IsFront ? car2 : car1;
+            
+            // Slow down the back car more than the front car
+            backCar.speed *= 0.6;
+            frontCar.speed *= 0.8;
+            
+            // Push the back car away from the front car
+            const pushDistance = (CAR_LENGTH * 0.8) - zOverlap;
+            backCar.position.z += pushDistance;
+            
+            // Add slight sideways movement for realism
+            const sideDirection = Math.random() > 0.5 ? 0.2 : -0.2;
+            backCar.position.x += sideDirection;
+            
+            // Update collision boxes after position change
+            if (backCar === player) {
+                updatePlayerCollisionBox();
+            }
+        } else {
+            // Side-to-side collision
+            // Determine which car is on the left
+            const car1IsLeft = car1.position.x < car2.position.x;
+            const leftCar = car1IsLeft ? car1 : car2;
+            const rightCar = car1IsLeft ? car2 : car1;
+            
+            // Slow down both cars
+            leftCar.speed *= 0.7;
+            rightCar.speed *= 0.7;
+            
+            // Push cars apart horizontally
+            const pushDistance = (LANE_WIDTH * 0.6) - xOverlap;
+            leftCar.position.x -= pushDistance / 2;
+            rightCar.position.x += pushDistance / 2;
+            
+            // Update collision boxes after position change
+            if (leftCar === player || rightCar === player) {
+                updatePlayerCollisionBox();
+            }
+        }
+        
+        // Add visual feedback for collision
+        if (car1 === player || car2 === player) {
+            // Shake camera slightly for player collisions
+            camera.position.y += 0.1;
+            setTimeout(() => {
+                camera.position.y -= 0.1;
+            }, 100);
         }
     }
     
@@ -671,6 +955,7 @@
         updateCompetitors();
         updateCamera();
         updateRacePositions();
+        updateCollisionEffects();
         
         renderer.render(scene, camera);
     }
@@ -688,17 +973,25 @@
         isGameOver = false;
         raceStarted = false;
         raceFinished = false;
-        document.getElementById('score-display').innerText = 'Position: 1/4';
+        document.getElementById('score-display').innerText = `Position: 1/${COMPETITOR_COUNT + 1}`;
         document.getElementById('game-over').style.display = 'none';
         
         // Remove all competitors
         competitors.forEach(car => scene.remove(car));
         competitors = [];
         
+        // Clear collision effects
+        collisionEffects.forEach(effect => {
+            effect.particles.forEach(particle => scene.remove(particle));
+        });
+        collisionEffects = [];
+        
         // Reset player position and properties
-        player.position.set(0, 0, 0);
+        const laneIndex = 1; // Middle lane
+        const xPos = -ROAD_WIDTH/2 + (laneIndex + 0.5) * LANE_WIDTH;
+        player.position.set(xPos, 0, -2);
         player.rotation.set(0, 0, 0);
-        player.currentLane = 1;
+        player.currentLane = laneIndex;
         player.speed = 0;
         player.distance = 0;
         
@@ -761,13 +1054,6 @@
         finishLine.rotation.x = -Math.PI / 2;
         finishLine.position.set(0, 0.02, -RACE_DISTANCE);
         scene.add(finishLine);
-    }
-    
-    function createCompetitors() {
-        // Create fixed number of competitor cars
-        for (let i = 0; i < COMPETITOR_COUNT; i++) {
-            createCompetitorCar(i);
-        }
     }
     
     function startRace() {
